@@ -74,9 +74,10 @@ func (a *app) callAction(w http.ResponseWriter, r *http.Request) {
 	a.audioMu.Lock()
 	defer a.audioMu.Unlock()
 	var body struct {
-		Action string `json:"action"`
-		Number string `json:"number"`
-		Digit  string `json:"digit"`
+		Action         string `json:"action"`
+		ExpectedCallID *int   `json:"expected_call_id"`
+		Number         string `json:"number"`
+		Digit          string `json:"digit"`
 	}
 	if !decodeJSON(w, r, &body) {
 		return
@@ -102,6 +103,13 @@ func (a *app) callAction(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeError(w, 400, "未知电话操作")
 		return
+	}
+	if body.ExpectedCallID != nil {
+		raw, err := a.phoneCommand("AT+CLCC")
+		if err != nil || !matchesIncomingAction(parseVoiceCalls(raw), *body.ExpectedCallID, body.Action) {
+			writeError(w, 409, "来电已结束或状态已变化，未执行操作")
+			return
+		}
 	}
 	identity := ""
 	if body.Action != "dtmf" {
@@ -185,4 +193,8 @@ func (a *app) saveAPN(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeError(w, 502, "模块未返回预期 APN，请刷新检查")
+}
+
+func matchesIncomingAction(calls []voiceCall, id int, action string) bool {
+	return (action == "answer" || action == "hangup") && len(calls) == 1 && calls[0].ID == id && (calls[0].State == 4 || calls[0].State == 5)
 }

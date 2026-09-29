@@ -3,6 +3,14 @@ import AppKit
 
 @MainActor final class HubDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var store: HubStore?
+    private var incomingPanel: IncomingCallPanel?
+    func configureIncoming(_ store: HubStore) {
+        self.store = store
+        if incomingPanel == nil { incomingPanel = IncomingCallPanel(store: store) }
+        store.notifications.openIncomingCall = { [weak self] in store.page = .phone; self?.showWindow() }
+        store.notifications.callsUpdated = { [weak self] calls in self?.incomingPanel?.update(calls) }
+        store.notifications.incomingAction = { [weak store] action, id, token in store?.respondToIncoming(action, id: id, token: token) }
+    }
     weak var mainWindow: NSWindow?
     func attach(_ window: NSWindow) { mainWindow = window; window.delegate = self }
     func hideToMenuBar() { mainWindow?.orderOut(nil); NSApp.setActivationPolicy(.accessory) }
@@ -13,6 +21,7 @@ import AppKit
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         if finishing { return .terminateNow }
         finishing = true
+        incomingPanel?.stop()
         store?.stopBackgroundPreparation(shutdown: true)
         store?.voice.stopStreams()
         Task {
@@ -30,7 +39,7 @@ import AppKit
         WindowGroup("DJ 4G Hub", id: "main") {
             HubRoot(store: store, service: store.service)
                 .background(UnifiedWindowAppearance(delegate: delegate))
-                .onAppear { delegate.store = store; store.notifications.openIncomingCall = { store.page = .phone; delegate.showWindow() } }
+                .onAppear { delegate.configureIncoming(store) }
         }.defaultSize(width: 1150, height: 800)
         .windowStyle(.hiddenTitleBar)
         .commands {

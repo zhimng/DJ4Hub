@@ -32,3 +32,15 @@ struct CallerAlertTracker {
         return events
     }
 }
+
+struct IncomingSessions {
+    private(set) var tokens: [String: String] = [:]
+    mutating func update(_ calls: [HubValue]) -> [String] {
+        let ids = Set(PhonePresentation.ringing(calls).map { $0["id"].text })
+        let removed = tokens.filter { !ids.contains($0.key) }.map { $0.value }
+        tokens = tokens.filter { ids.contains($0.key) }
+        for id in ids where tokens[id] == nil { tokens[id] = UUID().uuidString }
+        return removed
+    }
+    func matches(id: String, token: String) -> Bool { tokens[id] == token }
+}

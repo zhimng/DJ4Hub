@@ -9,6 +9,11 @@ import UserNotifications
     private var incoming = IncomingAlertTracker()
     private var liveCalls = CallerAlertTracker()
     var openIncomingCall: (() -> Void)?
+    var callsUpdated: (([HubValue]) -> Void)?
+    var incomingAction: ((String, String, String) -> Void)?
+    private var sessions = IncomingSessions()
+    func callToken(_ id: String) -> String? { sessions.tokens[id] }
+    func validCall(_ id: String, token: String) -> Bool { sessions.matches(id: id, token: token) }
     @Published var incomingSound = UserDefaults.standard.object(forKey: "incomingSound") as? Bool ?? true {
         didSet { UserDefaults.standard.set(incomingSound, forKey: "incomingSound") }
     }
@@ -26,16 +31,30 @@ import UserNotifications
     }
 
     func receiveCalls(_ calls: [HubValue]) async {
+        let center = UNUserNotificationCenter.current()
+        let expired = sessions.update(calls).map { "incoming-" + $0 }
+        center.removeDeliveredNotifications(withIdentifiers: expired)
+        center.removePendingNotificationRequests(withIdentifiers: expired)
+        callsUpdated?(calls)
         for event in liveCalls.update(calls) {
+            guard let token = sessions.tokens[event.id] else { continue }
             let content = UNMutableNotificationContent()
             content.title = "DJ 4G Hub · 电话呼入"
-            content.body = event.number + " · 打开客户端接听"
-            if incomingSound { content.sound = .default }
-            try? await UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "incoming-" + event.id, content: content, trigger: nil))
+            content.body = event.number
+            content.categoryIdentifier = "INCOMING_CALL"
+            content.userInfo = ["callID": event.id, "callToken": token]
+            do { try await center.add(UNNotificationRequest(identifier: "incoming-" + token, content: content, trigger: nil)) }
+            catch { permission = "来电通知发送失败，请检查系统通知权限" }
         }
     }
 
-    func configure() { UNUserNotificationCenter.current().delegate = self }
+    func configure() {
+        let center = UNUserNotificationCenter.current()
+        center.delegate = self
+        let answer = UNNotificationAction(identifier: "ANSWER_CALL", title: "接听", options: [.authenticationRequired])
+        let reject = UNNotificationAction(identifier: "REJECT_CALL", title: "拒接", options: [.destructive, .authenticationRequired])
+        center.setNotificationCategories([UNNotificationCategory(identifier: "INCOMING_CALL", actions: [answer, reject], intentIdentifiers: [], options: [])])
+    }
 
     func authorize() async {
         let center = UNUserNotificationCenter.current()
@@ -70,10 +89,18 @@ import UserNotifications
     }
 
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse, withCompletionHandler completionHandler: @escaping () -> Void) {
-        let isCall = response.notification.request.identifier.hasPrefix("incoming-")
+        let info = response.notification.request.content.userInfo
+        let id = info["callID"] as? String, token = info["callToken"] as? String
+        let action = response.actionIdentifier
         Task { @MainActor in
-            if isCall { self.openIncomingCall?() }
-            completionHandler()
+            defer { completionHandler() }
+            guard let id, let token, self.validCall(id, token: token) else { return }
+            switch action {
+            case "ANSWER_CALL": self.incomingAction?("answer", id, token)
+            case "REJECT_CALL": self.incomingAction?("hangup", id, token)
+            case UNNotificationDefaultActionIdentifier: self.openIncomingCall?()
+            default: break
+            }
         }
     }
 

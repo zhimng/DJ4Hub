@@ -10,3 +10,19 @@ func TestVoiceCallsExcludeData(t *testing.T) {
 		t.Fatalf("unexpected voice calls: %+v", calls)
 	}
 }
+
+func TestIncomingActionRejectsStaleOrAmbiguousCalls(t *testing.T) {
+	for _, state := range []int{4, 5} {
+		if !matchesIncomingAction([]voiceCall{{ID: 1, State: state}}, 1, "answer") {
+			t.Fatal("ringing call rejected")
+		}
+	}
+	for _, calls := range [][]voiceCall{nil, {{ID: 2, State: 4}}, {{ID: 1, State: 0}}, {{ID: 1, State: 4}, {ID: 2, State: 0}}} {
+		if matchesIncomingAction(calls, 1, "hangup") {
+			t.Fatal("stale or ambiguous action accepted")
+		}
+	}
+	if matchesIncomingAction([]voiceCall{{ID: 1, State: 4}}, 1, "dial") {
+		t.Fatal("unexpected action accepted")
+	}
+}

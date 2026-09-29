@@ -97,7 +97,7 @@ enum HubPage: String, CaseIterable, Identifiable {
                                     self.status = try await self.service.request("api/status")
                                     self.identityRefresh = Date()
                                 }
-                            } catch { self.voice.stopStreams(); self.calls = []; self.status = HubValue(); self.identityRefresh = .distantPast }
+                            } catch { self.voice.stopStreams(); self.calls = []; await self.notifications.receiveCalls([]); self.status = HubValue(); self.identityRefresh = .distantPast }
                         }
                     }
                     do { try await Task.sleep(nanoseconds: 3_000_000_000) } catch { return }
@@ -140,6 +140,21 @@ enum HubPage: String, CaseIterable, Identifiable {
     }
     func action(_ path: String, method: String = "POST", body: [String: Any] = [:]) {
         run { _ = try await self.service.request(path, method: method, body: body) }
+    }
+    func respondToIncoming(_ action: String, id: String, token: String) {
+        guard ["answer", "hangup"].contains(action), notifications.validCall(id, token: token) else { return }
+        run {
+            let current = try await self.service.request("api/calls")["calls"].array
+            guard current.count == 1, PhonePresentation.ringing(current).first?["id"].text == id,
+                  self.notifications.validCall(id, token: token) else { throw HubError(message: "来电已结束或状态已变化，请打开电话页确认") }
+            if action == "answer" { try await self.voice.connect(self.service) }
+            do {
+                _ = try await self.service.request("api/calls", method: "POST", body: ["action": action, "expected_call_id": Int(id) ?? -1])
+                self.calls = try await self.service.request("api/calls")["calls"].array
+                await self.notifications.receiveCalls(self.calls)
+                if action == "hangup" { self.voice.stopStreams() }
+            } catch { self.voice.stopStreams(); throw error }
+        }
     }
     func phone(_ action: String, number: String = "", audio: Bool) {
         run {

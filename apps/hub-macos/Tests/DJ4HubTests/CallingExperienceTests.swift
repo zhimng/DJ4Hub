@@ -15,6 +15,18 @@ final class CallingExperienceTests: XCTestCase {
         XCTAssertTrue(tracker.update([]).isEmpty)
         XCTAssertEqual(tracker.update([call(1, "", 5)]).count, 1)
     }
+    func testStaleNotificationCannotControlReusedCallID() {
+        var sessions = IncomingSessions()
+        XCTAssertTrue(sessions.update([call()]).isEmpty)
+        let old = sessions.tokens["1"]!
+        XCTAssertTrue(sessions.matches(id: "1", token: old))
+        XCTAssertTrue(sessions.update([call(1, "+12025550123")]).isEmpty)
+        XCTAssertEqual(sessions.tokens["1"], old)
+        XCTAssertEqual(sessions.update([]), [old])
+        XCTAssertFalse(sessions.matches(id: "1", token: old))
+        _ = sessions.update([call()])
+        XCTAssertFalse(sessions.matches(id: "1", token: old))
+    }
     func testSIMNotesNeverCrossCards() {
         let a = HubValue(["iccid": "test-card-a", "sim_inserted": true, "phone_number": "+12025550101"])
         let b = HubValue(["iccid": "test-card-b", "sim_inserted": true])
