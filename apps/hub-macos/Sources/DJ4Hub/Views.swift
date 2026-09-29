@@ -67,6 +67,18 @@ struct HubRoot: View {
                 Divider().opacity(0.5)
                 ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
+                    if !PhonePresentation.ringing(store.calls).isEmpty {
+                        Panel(title: "电话呼入") {
+                            ForEach(Array(PhonePresentation.ringing(store.calls).enumerated()), id: \.offset) { _, call in
+                                Text(PhonePresentation.caller(call)).font(.title2.bold()).textSelection(.enabled)
+                            }
+                            HStack {
+                                Button("查看来电") { store.page = .phone }
+                                Button("接听") { store.phone("answer", audio: true) }.disabled(store.busy || store.voice.busy)
+                                Button("拒接") { store.phone("hangup", audio: false) }.disabled(store.busy)
+                            }
+                        }
+                    }
                     if !store.ready { Panel(title: "连接设备服务") { Text(service.connectionText); Button("重试连接") { Task { await store.start() } }; Text("Web 控制台保持独立可用，客户端不会停止已有服务。").foregroundStyle(.secondary) } }
                     Group {
                         switch store.page {
@@ -148,6 +160,7 @@ struct OverviewPage: View {
             } } }.frame(height: store.activity["connections"].array.isEmpty ? 0 : min(300, CGFloat(store.activity["connections"].array.count) * 48))
             Text("仅显示连接元数据，不读取通信内容。").font(.caption).foregroundStyle(.secondary)
         }
+        OwnNumberView(store: store)
         Panel(title: "设备资料") { RawDetails(title: "展开设备详情（包含卡片标识）", value: store.status) }
     }
     func metric(_ title: String, _ value: String) -> some View { Panel(title: "") { Text(title).font(.caption).foregroundStyle(.secondary); Text(value).font(.title3.weight(.semibold)).lineLimit(2).textSelection(.enabled) }.frame(minHeight: 110) }
@@ -203,11 +216,12 @@ struct PhonePage: View {
         .sheet(isPresented: $showingHistory) {
             CommunicationHistoryView(store: store, kind: "call", onSelectNumber: { number = $0 })
         }
+        OwnNumberView(store: store)
         HStack(alignment: .top, spacing: 18) {
         Panel(title: "拨号") {
             Image(systemName: "phone.circle.fill").font(.system(size: 42, weight: .light)).foregroundStyle(HubStyle.accent.opacity(0.8)).frame(maxWidth: .infinity).padding(.top, 6)
             HubField(title: "电话号码", text: $number, placeholder: "+64 …")
-            Text(store.calls.isEmpty ? "准备就绪，等待拨号" : store.calls.map { "\($0["number"].text) · \(callState($0["state"].text))" }.joined(separator: "\n")).font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity)
+            Text(store.calls.isEmpty ? "准备就绪，等待拨号" : store.calls.map { "\(PhonePresentation.caller($0)) · \(callState($0["state"].text))" }.joined(separator: "\n")).font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity)
             LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 3), spacing: 10) {
                 ForEach(Array("123456789*0#").map(String.init), id: \.self) { digit in
                     Button {
@@ -344,6 +358,43 @@ struct SettingsPage: View {
             DetailRow(title: "音频会话", value: "Web 与客户端不可同时占用模块")
             Divider().padding(.vertical, 8)
             Text("退出时关闭客户端音频，只停止客户端自身启动的服务。模块初始化失败仍需检查硬件连接。").font(.system(size: 11)).foregroundStyle(.secondary).padding(.bottom, 6)
+        }
+    }
+}
+
+struct OwnNumberView: View {
+    @ObservedObject var store: HubStore
+    @State private var editing = false
+    @State private var draft = ""
+    @State private var card = ""
+    var body: some View {
+        Panel(title: "本机号码") {
+            HStack {
+                Text(store.ownNumber).font(.title3).textSelection(.enabled)
+                if !store.simKey.isEmpty { Text(store.ownNumberSource).font(.caption).foregroundStyle(.secondary) }
+                Spacer()
+                Button("设置号码备注") { card = store.simKey; draft = store.ownNumberNotes[card] ?? ""; editing = true }.disabled(store.simKey.isEmpty)
+            }
+        }.sheet(isPresented: $editing) {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("本机号码备注").font(.headline)
+                Text("仅保存在本机，按 SIM 区分，不写入 SIM。留空可恢复自动读取。")
+                TextField("例如 +86138…", text: $draft)
+                if card != store.simKey { Text("SIM 已变化，请关闭后重新设置。").foregroundStyle(.orange) }
+                HStack {
+                    Button("取消") { editing = false }
+                    Button("保存") {
+                        let expectedCard = card, value = draft
+                        store.run {
+                            store.status = try await store.service.request("api/status")
+                            guard store.simKey == expectedCard else { throw HubError(message: "SIM 已变化，未保存号码备注") }
+                            store.saveOwnNumber(value, for: expectedCard)
+                            editing = false
+                        }
+                    }
+                        .disabled(card != store.simKey || (!draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && HistoryPresentation.dialNumber(draft) == nil))
+                }
+            }.padding(24).frame(width: 440)
         }
     }
 }

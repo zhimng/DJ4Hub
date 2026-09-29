@@ -18,6 +18,19 @@ enum HubPage: String, CaseIterable, Identifiable {
     @Published var trafficHistory = TrafficHistory()
     @Published var messages: [HubValue] = []
     @Published var calls: [HubValue] = []
+    @Published var ownNumberNotes = UserDefaults.standard.dictionary(forKey: "ownNumberNotes") as? [String: String] ?? [:]
+    var simKey: String { PhonePresentation.simKey(status) }
+    var ownNumber: String { PhonePresentation.ownNumber(status, notes: ownNumberNotes) }
+    var ownNumberSource: String { ownNumberNotes[simKey] != nil ? "手动设置" : (ownNumber == "未读取到号码" ? "可手动设置" : "SIM 读取") }
+    func saveOwnNumber(_ value: String, for card: String) {
+        guard !card.isEmpty, card == simKey else { return }
+        let cleaned = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if cleaned.isEmpty { ownNumberNotes.removeValue(forKey: card) }
+        else if let number = HistoryPresentation.dialNumber(cleaned) { ownNumberNotes[card] = number }
+        else { return }
+        UserDefaults.standard.set(ownNumberNotes, forKey: "ownNumberNotes")
+    }
+    private var identityRefresh = Date.distantPast
     @Published var network = HubValue()
     @Published var activity = HubValue()
     @Published var esim = HubValue()
@@ -72,7 +85,21 @@ enum HubPage: String, CaseIterable, Identifiable {
         if ready && alertsTask == nil {
             alertsTask = Task { [weak self] in
                 while !Task.isCancelled {
-                    if let self, let snapshot = try? await self.service.request("api/alerts") { await self.notifications.receive(snapshot) }
+                    if let self {
+                        if let snapshot = try? await self.service.request("api/alerts") { await self.notifications.receive(snapshot) }
+                        if !self.busy && !self.voice.busy {
+                            do {
+                                let next = try await self.service.request("api/calls")["calls"].array
+                                if !self.calls.isEmpty && next.isEmpty { self.voice.stopStreams() }
+                                self.calls = next
+                                await self.notifications.receiveCalls(next)
+                                if Date().timeIntervalSince(self.identityRefresh) > 30 && next.isEmpty {
+                                    self.status = try await self.service.request("api/status")
+                                    self.identityRefresh = Date()
+                                }
+                            } catch { self.voice.stopStreams(); self.calls = []; self.status = HubValue(); self.identityRefresh = .distantPast }
+                        }
+                    }
                     do { try await Task.sleep(nanoseconds: 3_000_000_000) } catch { return }
                 }
             }
@@ -85,7 +112,7 @@ enum HubPage: String, CaseIterable, Identifiable {
             let health = try await service.request("api/health")
             healthKnown = true
             deviceConnected = health["ok"].bool && !health["port"].text.isEmpty && health["port"].text != "—" && health["discovery_error"].text.isEmpty
-            if !deviceConnected { standbyAttempted = false }
+            if !deviceConnected { standbyAttempted = false; status = HubValue() }
             scheduleStandby()
             // Poll only the visible page, keeping USB work demand-driven.
             switch page {
@@ -95,20 +122,12 @@ enum HubPage: String, CaseIterable, Identifiable {
                 trafficHistory.record(traffic)
                 activity = try await service.request("api/network/activity")
             case .sms: messages = try await service.request("api/sms").array
-            case .phone:
-                let next = try await service.request("api/calls")["calls"].array
-                if !calls.isEmpty && next.isEmpty { voice.stopStreams() }
-                calls = next
+            case .phone: break // Global call poller also runs with the window hidden.
             case .network: network = try await service.request("api/network")
             case .esim: esim = try await service.request("api/esim")
             case .settings, .at: break
             }
-            // Continue monitoring hangup when a different native page is visible.
-            if page != .phone && (!calls.isEmpty || voice.connected) {
-                let next = try await service.request("api/calls")["calls"].array
-                if !calls.isEmpty && next.isEmpty { voice.stopStreams() }
-                calls = next
-            }
+
         } catch { healthKnown = false; deviceConnected = false; notifications.report(error.localizedDescription, success: false, automatic: true) }
     }
     func run(_ operation: @escaping () async throws -> Void) {

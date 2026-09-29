@@ -7,19 +7,31 @@ import UserNotifications
     private var lastAutomaticError = ""
     private var lastAutomaticDate = Date.distantPast
     private var incoming = IncomingAlertTracker()
+    private var liveCalls = CallerAlertTracker()
+    var openIncomingCall: (() -> Void)?
     @Published var incomingSound = UserDefaults.standard.object(forKey: "incomingSound") as? Bool ?? true {
         didSet { UserDefaults.standard.set(incomingSound, forKey: "incomingSound") }
     }
 
     func receive(_ snapshot: HubValue) async {
         let events = incoming.update(sms: snapshot["sms"].array.map(\.text), ringing: snapshot["ringing"].array.map(\.text))
-        for (enabled, title) in [(events.sms, "收到新短信"), (events.call, "有电话呼入")] where enabled {
+        for (enabled, title) in [(events.sms, "收到新短信")] where enabled {
             let content = UNMutableNotificationContent()
             content.title = "DJ 4G Hub · " + title
             content.body = "请打开客户端查看。"
             if incomingSound { content.sound = .default }
             do { try await UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)) }
             catch { permission = "来电／短信通知发送失败，请检查系统通知权限" }
+        }
+    }
+
+    func receiveCalls(_ calls: [HubValue]) async {
+        for event in liveCalls.update(calls) {
+            let content = UNMutableNotificationContent()
+            content.title = "DJ 4G Hub · 电话呼入"
+            content.body = event.number + " · 打开客户端接听"
+            if incomingSound { content.sound = .default }
+            try? await UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "incoming-" + event.id, content: content, trigger: nil))
         }
     }
 
@@ -54,6 +66,14 @@ import UserNotifications
             let request = UNNotificationRequest(identifier: automatic ? "device-refresh-error" : UUID().uuidString, content: content, trigger: nil)
             do { try await center.add(request) }
             catch { permission = "系统通知发送失败；请在这里查看操作结果" }
+        }
+    }
+
+    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse, withCompletionHandler completionHandler: @escaping () -> Void) {
+        let isCall = response.notification.request.identifier.hasPrefix("incoming-")
+        Task { @MainActor in
+            if isCall { self.openIncomingCall?() }
+            completionHandler()
         }
     }
 

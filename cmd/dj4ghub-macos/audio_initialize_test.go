@@ -127,3 +127,22 @@ func TestInitializeAudioADB(t *testing.T) {
 		})
 	}
 }
+
+func TestAudioUSBLocationNestedHub(t *testing.T) {
+ raw := `+-o Hub <class IOUSBHostDevice, id 1>
+  | "idVendor" = 1452
+  | "idProduct" = 32783
+  | "locationID" = 100
+  +-o Modem <class IOUSBHostDevice, id 2>
+    | "idVendor" = 11427
+    | "idProduct" = 16390
+    | "locationID" = 34865152
+    +-o AT <class IOUSBHostInterface, id 3>
+        "idVendor" = 11427
+        "idProduct" = 16390
+        "locationID" = 34865152
+`
+ got, err := parseAudioUSBLocation(raw)
+ if err != nil || got != "34865152X" { t.Fatal(got, err) }
+ if _, err := parseAudioUSBLocation(raw + raw); err == nil { t.Fatal("multiple devices accepted") }
+}

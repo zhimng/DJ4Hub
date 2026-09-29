@@ -27,7 +27,11 @@ func audioUSBLocation(ctx context.Context) (string, error) {
 
 func parseAudioUSBLocation(raw string) (string, error) {
 	locations := []string{}
-	for _, block := range regexp.MustCompile(`(?m)^\+-o `).Split(raw, -1) {
+	for _, block := range regexp.MustCompile(`(?m)^[ |]*\+-o `).Split(raw, -1) {
+		header := strings.SplitN(block, "\n", 2)[0]
+		if strings.Contains(header, "<class ") && !strings.Contains(header, "<class IOUSBHostDevice,") {
+			continue
+		}
 		vid, v := intProperty(block, "idVendor")
 		pid, p := intProperty(block, "idProduct")
 		if !v || !p || vid != 0x2ca3 || pid != 0x4006 {
